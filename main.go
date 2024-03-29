@@ -6,11 +6,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"os"
+	"strconv"
 	"strings"
 )
 
 func main() {
-	p := tea.NewProgram(initialModel())
+	p := tea.NewProgram(gridModel())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Alas, there's been an error: %v", err)
 		os.Exit(1)
@@ -33,6 +34,12 @@ type spaces struct {
 	value      int
 	input      textinput.Model
 	coordinate coordinate
+	styles     *Styles
+}
+
+type Styles struct {
+	BorderColor lipgloss.Color
+	InputField  lipgloss.Style
 }
 
 type model struct {
@@ -42,20 +49,33 @@ type model struct {
 	selected map[coordinate]struct{} // which square are selected
 }
 
-func initialModel() model {
+func InputStyle() *Styles {
+	s := new(Styles)
+	s.BorderColor = "36"
+	s.InputField = lipgloss.NewStyle().
+		BorderForeground(s.BorderColor).
+		BorderStyle(lipgloss.RoundedBorder()).
+		Padding(0).
+		Width(3).
+		Height(1).
+		AlignHorizontal(lipgloss.Center)
+
+	return s
+}
+
+func gridModel() model {
 	// Render new sudoku board (a squares grid)
 	var squares [9][9]spaces
 	for i := 0; i < len(squares); i++ {
 		for j := 0; j < len(squares[i]); j++ {
-			// Setup space input
+			style := InputStyle()
 			input := textinput.New()
-			input.Placeholder = "0"
+			input.Prompt = ""
 			input.CharLimit = 1
-			input.Prompt = "|"
 
-			// Declare default values
 			squares[i][j].value = 0
 			squares[i][j].input = input
+			squares[i][j].styles = style
 		}
 	}
 
@@ -76,13 +96,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 
-		// Keys to exit program
 		case "ctrl+c", "q":
 			return m, tea.Quit
 
-		// Handle movement keys in board grid
 		case "up", "down", "left", "right":
 			userInput := msg.String()
+
+			// Clear cursor traces
+			m.grid[m.cursorY][m.cursorX].input.Blur()
+			m.grid[m.cursorY][m.cursorX].input.TextStyle = noStyle
 
 			if userInput == "up" && m.cursorY > 0 {
 				m.cursorY--
@@ -100,65 +122,64 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursorX++
 			}
 
-			// Catch coordinates and focus on current square
-			commands := make([]tea.Cmd, len(m.grid))
-			for i := 0; i <= len(m.grid)-1; i++ {
-				for j := 0; j <= len(m.grid[i])-1; j++ {
-					if i == m.cursorY && j == m.cursorX {
-						// Set focused state
-						commands[i] = m.grid[i][j].input.Focus()
-						m.grid[i][j].input.PromptStyle = focusedStyle
-						m.grid[i][j].input.TextStyle = focusedStyle
-						continue
-					}
+			// New Cursor direction
+			cursorDirection := m.grid[m.cursorY][m.cursorX].input.Focus()
+			m.grid[m.cursorY][m.cursorX].input.TextStyle = focusedStyle
 
-					// Remove focused state
-					m.grid[i][j].input.Blur()
-					m.grid[i][j].input.PromptStyle = noStyle
-					m.grid[i][j].input.TextStyle = noStyle
-				}
+			return m, cursorDirection
+
+		default:
+			if numericInput, err := strconv.Atoi(msg.String()); err == nil && numericInput != 0 {
+				var newSpaceValue tea.Cmd
+				m.grid[m.cursorY][m.cursorX].value = numericInput
+				m.grid[m.cursorY][m.cursorX].input, newSpaceValue = m.grid[m.cursorY][m.cursorX].input.Update(msg)
+
+				return m, newSpaceValue
 			}
-			return m, tea.Batch(commands...)
 		}
 	}
 
-	// Handle character input
-	commands := m.updateInputs(msg)
-
-	return m, commands
-}
-
-func (m *model) updateInputs(msg tea.Msg) tea.Cmd {
-	var commands = make([]tea.Cmd, len(m.grid))
-
-	// Update the input value
-	for i := 0; i <= len(m.grid)-1; i++ {
-		for j := 0; j <= len(m.grid[i])-1; j++ {
-			m.grid[i][j].input, commands[i] = m.grid[i][j].input.Update(msg)
-			//TODO: Upadate the "value" variable on square
-		}
-	}
-
-	return tea.Batch(commands...)
+	return m, nil
 }
 
 func (m model) View() string {
-	// Build spaces strings
-	var builder strings.Builder
+	var gridBuilder string
+	var headerBuilder strings.Builder
+	var footerBuilder strings.Builder
 
-	// Iterate over grid
+	headerBuilder.WriteString("\nGoSudoku!!\n")
+
 	for columnIndex := 0; columnIndex < len(m.grid); columnIndex++ {
+		var row string
 		for rowIndex := 0; rowIndex < len(m.grid[columnIndex]); rowIndex++ {
-			// Build text input on space
-			builder.WriteString(m.grid[columnIndex][rowIndex].input.View())
+			row = lipgloss.JoinHorizontal(
+				lipgloss.Left,
+				row,
+				m.grid[columnIndex][rowIndex].styles.InputField.Render(
+					m.grid[columnIndex][rowIndex].input.View()))
+
+			if rowIndex == 2 || rowIndex == 5 {
+				row += "  "
+			}
 		}
-		builder.WriteString("\n")
+		gridBuilder = lipgloss.JoinVertical(
+			lipgloss.Left,
+			gridBuilder,
+			row,
+		)
+		if columnIndex == 2 || columnIndex == 5 {
+			gridBuilder = lipgloss.JoinVertical(
+				lipgloss.Left,
+				gridBuilder,
+				" ",
+			)
+		}
 	}
+	// Debug
+	footerBuilder.WriteString(helpStyle.Render(fmt.Sprintf("\n\nx: %v / y: %v", m.cursorX, m.cursorY)))
+	footerBuilder.WriteString(helpStyle.Render(fmt.Sprintf("\nValue: %v", m.grid[m.cursorY][m.cursorX].value)))
 
-	// The footer
-	builder.WriteString(fmt.Sprintf("\nx: %v / y: %v", m.cursorX, m.cursorY))
-	builder.WriteString(helpStyle.Render("\nPress q to quit.\n"))
+	footerBuilder.WriteString(helpStyle.Render("\nPress q to quit.\n"))
 
-	// Send the UI for rendering
-	return builder.String()
+	return headerBuilder.String() + gridBuilder + footerBuilder.String()
 }
